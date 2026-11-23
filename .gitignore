@@ -1,0 +1,50 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/blockchain
+/cmd/cmd
+bin/
+dist/
+
+# Test binaries and coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace / module cache
+go.work
+go.work.sum
+vendor/
+
+# Profiling output
+*.prof
+*.pprof
+
+# Key material and secrets — never commit these
+*.key
+*.pem
+*.seed
+keystore/
+*.env
+.env
+.env.*
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local archives / exports (not source)
+*.zip
+
+# Go build temp: Application Control blocks binaries under %TEMP%
+.gotmp/
