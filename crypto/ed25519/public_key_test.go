@@ -319,3 +319,11 @@ func TestSpecCheckVectorsAreAllRejected(t *testing.T) {
 		})
 	}
 }
+
+func TestNilVerification(t *testing.T) {
+	var absent *PublicKey
+	var sig *Signature
+	if (new(PublicKey)).Verify(nil, sig) || absent.Verify(nil, sig) {
+		t.Fatal("verified absent input")
+	}
+}

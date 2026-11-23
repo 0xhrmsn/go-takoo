@@ -156,7 +156,7 @@ func (pub *PublicKey) String() string {
 // signature from another scheme is simply false.
 func (pub *PublicKey) Verify(msg []byte, sign crypto.Signature) bool {
 	xEd25519, ok := sign.(*Signature)
-	if !ok {
+	if !ok || xEd25519 == nil || pub == nil || pub.inner == [publicKeySize]byte{} {
 		return false
 	}
 

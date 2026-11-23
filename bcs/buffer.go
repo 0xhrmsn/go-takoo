@@ -18,13 +18,14 @@ import (
 // that bounds a length prefix otherwise, and a short message can name a very
 // large one.
 const (
-	_              uint   = strconv.IntSize - 64
-	maxDecodeAlloc uint64 = 32 << 20
+	_                 uint   = strconv.IntSize - 64
+	maxDecodeAlloc    uint64 = 32 << 20
+	maxFrameSize             = 32 << 20
+	maxPooledCapacity        = 64 << 10
 )
 
 // Buffers are pooled because encoding is on the hot path of every block. They
-// are cleared on the way out rather than on the way in, so a failed encode can
-// hand one back without tidying it first.
+// drop large backing arrays on release.
 var bufferPool = sync.Pool{New: func() any { return new(buffer) }}
 
 // buffer is the scratch space a single encode or decode runs in: str holds the
@@ -70,30 +71,47 @@ func (buf *buffer) writeTo(w io.Writer) error {
 	return nil
 }
 
-// readFrom pulls the whole reader in before decoding starts. It applies no
-// limit of its own, so a caller reading from the network bounds the reader
-// first, the way p2p does with its frame size.
+// readFrom accepts one frame. Read one extra byte to distinguish a full
+// frame from a truncated oversized message, even on readers without a length.
 func (buf *buffer) readFrom(r io.Reader) error {
-	if br, ok := r.(*bytes.Reader); ok {
-		buf.str = buf.str[:buf.grow(br.Len()+512)]
+	if br, ok := r.(*bytes.Reader); ok && br.Len() > maxFrameSize {
+		return fmt.Errorf("bcs: frame exceeds %d bytes", maxFrameSize)
 	}
-
+	var chunk [4096]byte
+	emptyReads := 0
 	for {
-		i := buf.grow(512)
-		buf.str = buf.str[:i]
-		n, err := r.Read(buf.str[i:cap(buf.str)])
-		if n < 0 || n > cap(buf.str)-i {
-			return fmt.Errorf("utils/encoding: reader reported an invalid byte count")
+		dst := chunk[:min(len(chunk), maxFrameSize-len(buf.str)+1)]
+		n, err := r.Read(dst)
+		if n < 0 || n > len(dst) {
+			return fmt.Errorf("bcs: invalid reader byte count")
 		}
-
-		buf.str = buf.str[:i+n]
+		if n > maxFrameSize-len(buf.str) {
+			return fmt.Errorf("bcs: frame exceeds %d bytes", maxFrameSize)
+		}
+		buf.str = append(buf.str, dst[:n]...)
 		if err == io.EOF {
 			return nil
 		}
 		if err != nil {
 			return err
 		}
+		if n == 0 {
+			emptyReads++
+			if emptyReads >= 100 {
+				return io.ErrNoProgress
+			}
+		} else {
+			emptyReads = 0
+		}
 	}
+}
+
+func (buf *buffer) release() {
+	if cap(buf.str) > maxPooledCapacity {
+		buf.str = nil
+	}
+	buf.reset()
+	bufferPool.Put(buf)
 }
 
 func (buf *buffer) length() int { return len(buf.str) - buf.off }
@@ -194,6 +212,9 @@ func (buf *buffer) decode(v any) error {
 	}
 
 	buf.remaining = maxDecodeAlloc
+	if err := buf.reserve(1, uint64(typ.Size())); err != nil {
+		return err
+	}
 	fresh := reflect.New(typ).Elem()
 	if err := reader(buf, fresh); err != nil {
 		return err

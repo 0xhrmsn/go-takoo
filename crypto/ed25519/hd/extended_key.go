@@ -150,14 +150,20 @@ func (p DerivationPath) String() string {
 	return string(out)
 }
 
-// ExtendedKey is one node in the tree: its key, its chain code and the path
-// that led to it. Key and chain code are arrays, so copying an ExtendedKey
-// really copies them instead of sharing memory.
+// ExtendedKey holds a path and private derivation material. Value copies share
+// immutable material. Indirection keeps fmt from reflecting the secret arrays
+// inside a containing struct. A zero ExtendedKey has no material.
 type ExtendedKey struct {
+	*keyMaterial
+	path DerivationPath
+}
+
+type keyMaterial struct {
 	key       [nodeKeySize]byte
 	chainCode [nodeChainCodeSize]byte
-	path      DerivationPath
 }
+
+var errUninitialized = errors.New("crypto/ed25519/hd: uninitialized extended key")
 
 // NewMasterKey derives the master key from a 16 to 64 byte seed, as SLIP-0010
 // says, with HMAC-SHA512 keyed by "ed25519 seed".
@@ -177,7 +183,7 @@ func NewMasterKey(seed []byte) (ExtendedKey, error) {
 	_, _ = hmac.Write(seed)
 	i := hmac.Sum(nil)
 
-	var k ExtendedKey
+	k := ExtendedKey{keyMaterial: new(keyMaterial)}
 	_ = copy(k.key[:], i[:nodeKeySize])
 	_ = copy(k.chainCode[:], i[nodeKeySize:])
 
@@ -233,7 +239,7 @@ func ExtendedKeyFromString(s string) (ExtendedKey, error) {
 		}
 	}
 
-	k := ExtendedKey{path: path}
+	k := ExtendedKey{keyMaterial: new(keyMaterial), path: path}
 	material := b[extendedKeyHeaderSize+4*depth:]
 	_ = copy(k.chainCode[:], material[:nodeChainCodeSize])
 	_ = copy(k.key[:], material[nodeChainCodeSize:])
@@ -247,6 +253,9 @@ func ExtendedKeyFromString(s string) (ExtendedKey, error) {
 // Derive returns the child at index, which has to be hardened. Secret buffers
 // are wiped along the way.
 func (k *ExtendedKey) Derive(index uint32) (*ExtendedKey, error) {
+	if k == nil || k.keyMaterial == nil {
+		return nil, errUninitialized
+	}
 	if index < HardenedKeyStart {
 		return nil, fmt.Errorf("crypto/ed25519/hd: ed25519 supports only hardened derivation: child index %d", index)
 	}
@@ -264,7 +273,7 @@ func (k *ExtendedKey) Derive(index uint32) (*ExtendedKey, error) {
 	i := hmac.Sum(nil)
 	defer clear(i)
 
-	child := &ExtendedKey{path: make(DerivationPath, len(k.path)+1)}
+	child := &ExtendedKey{keyMaterial: new(keyMaterial), path: make(DerivationPath, len(k.path)+1)}
 	_ = copy(child.key[:], i[:nodeKeySize])
 	_ = copy(child.chainCode[:], i[nodeKeySize:])
 	_ = copy(child.path, k.path)
@@ -277,6 +286,9 @@ func (k *ExtendedKey) Derive(index uint32) (*ExtendedKey, error) {
 // wiping the nodes in between. k itself never changes; an empty path gives
 // back a copy. The whole path is checked before any work starts.
 func (k *ExtendedKey) DerivePath(path DerivationPath) (*ExtendedKey, error) {
+	if k == nil || k.keyMaterial == nil {
+		return nil, errUninitialized
+	}
 	depth := len(k.path) + len(path)
 	if depth > maxDepth {
 		return nil, fmt.Errorf("crypto/ed25519/hd: derivation is deeper than %d levels: %d levels", maxDepth, depth)
@@ -287,7 +299,8 @@ func (k *ExtendedKey) DerivePath(path DerivationPath) (*ExtendedKey, error) {
 		}
 	}
 	if len(path) == 0 {
-		return &ExtendedKey{key: k.key, chainCode: k.chainCode, path: slices.Clone(k.path)}, nil
+		material := *k.keyMaterial
+		return &ExtendedKey{keyMaterial: &material, path: slices.Clone(k.path)}, nil
 	}
 
 	node := k
@@ -309,11 +322,6 @@ func (k *ExtendedKey) DerivePath(path DerivationPath) (*ExtendedKey, error) {
 // Format makes fmt print a redacted placeholder whatever the verb, so neither
 // key nor chain code can end up in a log. Call String when you really mean
 // to export it.
-//
-// fmt can't call Format on a value held in an unexported struct field; it
-// reflects into it and prints the arrays. Key and chain code stay arrays
-// anyway, so a copy never shares memory with the original; hold an
-// ExtendedKey by pointer, or in an exported field, if it might get printed.
 func (ExtendedKey) Format(state fmt.State, _ rune) {
 	_, _ = io.WriteString(state, "hd.ExtendedKey(REDACTED)")
 }
@@ -325,6 +333,9 @@ func (k *ExtendedKey) Path() DerivationPath {
 
 // PrivateKey returns the account key for this node.
 func (k *ExtendedKey) PrivateKey() (*ed25519.PrivateKey, error) {
+	if k == nil || k.keyMaterial == nil {
+		return nil, errUninitialized
+	}
 	return ed25519.PrivateKeyFromBytes(k.key[:])
 }
 
@@ -333,6 +344,9 @@ func (k *ExtendedKey) PrivateKey() (*ed25519.PrivateKey, error) {
 // no-limit encoder, and it isn't the same format as BIP-32's xprv. Anyone
 // with this string can derive every account below this node.
 func (k *ExtendedKey) String() string {
+	if k == nil || k.keyMaterial == nil {
+		return ""
+	}
 	buf := make([]byte, extendedKeyHeaderSize+len(k.path)*4+nodeChainCodeSize+nodeKeySize)
 	buf[0] = extendedKeyVersion
 	buf[1] = byte(crypto.SchemeEd25519)

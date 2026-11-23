@@ -228,8 +228,9 @@ func (prv *PrivateKey) Public() crypto.AggregatePublicKey {
 	_ = point.FromJacobian(&sum)
 
 	return &PublicKey{
-		inner: point.Bytes(),
-		point: point,
+		possessionKnown: true,
+		inner:           point.Bytes(),
+		point:           point,
 	}
 }
 

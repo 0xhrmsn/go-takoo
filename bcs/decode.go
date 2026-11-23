@@ -9,11 +9,11 @@ import (
 	"unicode/utf8"
 )
 
-// Decode reads one value from r into v. It takes everything r has, so a caller
-// reading from the network bounds it first.
+// Decode reads one frame of at most 32 MiB from r. The transport must delimit
+// frames and set its own I/O deadlines.
 func Decode(r io.Reader, v any) error {
 	buf := getBuffer()
-	defer bufferPool.Put(buf)
+	defer buf.release()
 	if err := buf.readFrom(r); err != nil {
 		return err
 	}
@@ -24,9 +24,12 @@ func Decode(r io.Reader, v any) error {
 // DecodeBytes reads one value out of b, borrowing b rather than copying it.
 // Anything the value keeps is cloned on the way in.
 func DecodeFromBytes(b []byte, v any) error {
+	if len(b) > maxFrameSize {
+		return fmt.Errorf("bcs: frame exceeds %d bytes", maxFrameSize)
+	}
 	buf := getBuffer()
 	err := buf.decodeFrom(b, v)
-	bufferPool.Put(buf)
+	buf.release()
 
 	return err
 }
@@ -130,6 +133,9 @@ func readString(dec *buffer, val reflect.Value) error {
 	if !utf8.Valid(b) {
 		return fmt.Errorf("utils/encoding: string is not valid UTF-8")
 	}
+	if err := dec.reserve(uint64(len(b)), 1); err != nil {
+		return err
+	}
 	val.SetString(string(b))
 
 	return nil
@@ -140,6 +146,9 @@ func readString(dec *buffer, val reflect.Value) error {
 func readBytes(buf *buffer, val reflect.Value) error {
 	b, err := buf.readBytes()
 	if err != nil {
+		return err
+	}
+	if err := buf.reserve(uint64(len(b)), 1); err != nil {
 		return err
 	}
 	val.SetBytes(bytes.Clone(b))

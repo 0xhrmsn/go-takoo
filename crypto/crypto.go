@@ -91,7 +91,7 @@ type PrivateKey interface {
 
 // AggregatePublicKey is a validator's public key. Aggregate adds keys
 // together so the sum checks the sum of their signatures on one message;
-// only do that with keys whose possession proof passed VerifyPossession.
+// imported BLS keys must first be admitted with WithProofOfPossession.
 type AggregatePublicKey interface {
 	Aggregate([]AggregatePublicKey) (AggregatePublicKey, error)
 	Bytes() []byte

@@ -636,15 +636,16 @@ func BenchmarkParseDerivationPath(b *testing.B) {
 	}
 }
 
-// With slices, a value copy shared its arrays with the original: clearing the
-// copy wiped the original. A copy and a child must both stand on their own.
+// Discarding a copied handle must leave a live handle usable.
 func TestCopiesAreIndependent(t *testing.T) {
 	master := testMaster(t)
 	before := master.String()
 
 	cp := master
-	clear(cp.key[:])
-	clear(cp.chainCode[:])
+	cp = ExtendedKey{}
+	if _, err := cp.PrivateKey(); err == nil {
+		t.Fatal("cleared handle still has a key")
+	}
 	if master.String() != before {
 		t.Fatal("clearing a value copy wiped the original")
 	}
@@ -690,5 +691,35 @@ func TestConcurrentDerivationAgrees(t *testing.T) {
 	fresh := testMaster(t)
 	if master.String() != fresh.String() {
 		t.Fatal("concurrent derivation changed the master")
+	}
+}
+
+func TestUninitializedExtendedKey(t *testing.T) {
+	for _, k := range []*ExtendedKey{nil, {}} {
+		if _, err := k.PrivateKey(); err == nil {
+			t.Fatal("uninitialized key exported")
+		}
+		if _, err := k.Derive(HardenedKeyStart); err == nil {
+			t.Fatal("uninitialized child derived")
+		}
+		if _, err := k.DerivePath(nil); err == nil {
+			t.Fatal("uninitialized key copied")
+		}
+		if k.String() != "" {
+			t.Fatal("uninitialized key serialized")
+		}
+	}
+}
+
+func TestNestedKeyRedaction(t *testing.T) {
+	k := testMaster(t)
+	wrapper := struct{ hidden ExtendedKey }{k}
+	for _, format := range []string{"%v", "%+v", "%#v", "%x"} {
+		out := fmt.Sprintf(format, wrapper)
+		for _, secret := range [][32]byte{k.key, k.chainCode} {
+			if strings.Contains(out, fmt.Sprintf(format, secret)) {
+				t.Fatal("nested formatter exposed key material")
+			}
+		}
 	}
 }

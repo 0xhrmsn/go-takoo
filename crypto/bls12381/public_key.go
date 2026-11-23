@@ -29,28 +29,36 @@ var negGenerator = func() bls12381.G2Affine {
 
 // PublicKey is a validator's public key, a point in G2. Both the encoded
 // bytes and the decoded point are kept so neither has to be recomputed. It
-// is never the point at infinity. The encoding is a fixed-size array, so it
-// compares with == and works as a map key.
+// is never the point at infinity after parsing. Use Equal or the canonical
+// bytes for key identity, independent of local possession verification.
 type PublicKey struct {
-	inner [publicKeySize]byte
-	point bls12381.G2Affine
+	inner           [publicKeySize]byte
+	point           bls12381.G2Affine
+	possessionKnown bool
 }
 
 // AggregatePublicKey adds keys together into one key that checks the
-// combined signature on a single message. Only aggregate keys whose
-// possession proofs you've verified; otherwise a crafted key can cancel out
-// honest ones. An empty list, a nil or infinite key, or a sum that comes out
-// as infinity is an error.
+// combined signature on a single message. Each distinct input must come
+// from PrivateKey.Public or WithProofOfPossession. The sum is a verification
+// key and cannot itself be supplied as a registered signer.
 func AggregatePublicKey(pubs []*PublicKey) (*PublicKey, error) {
 	if len(pubs) == 0 {
 		return nil, fmt.Errorf("crypto/bls12381: nothing to aggregate")
 	}
 
+	seen := make(map[[publicKeySize]byte]struct{}, len(pubs))
 	var sum bls12381.G2Jac
 	for i, key := range pubs {
 		if key == nil || key.point.IsInfinity() {
 			return nil, fmt.Errorf("crypto/bls12381: element %d has no material", i)
 		}
+		if !key.possessionKnown {
+			return nil, fmt.Errorf("crypto/bls12381: unverified validator key at index %d", i)
+		}
+		if _, exists := seen[key.inner]; exists {
+			return nil, fmt.Errorf("crypto/bls12381: duplicate validator key at index %d", i)
+		}
+		seen[key.inner] = struct{}{}
 		_ = sum.AddMixed(&key.point)
 	}
 
@@ -91,7 +99,7 @@ func AggregateVerify(pubs []*PublicKey, msgs [][]byte, sign *Signature) bool {
 	distinct := make([][]byte, 0, len(msgs))
 	sums := make([]bls12381.G2Jac, 0, len(msgs))
 	for i, key := range pubs {
-		if key == nil || key.point.IsInfinity() {
+		if key == nil || !key.possessionKnown || key.point.IsInfinity() {
 			return false
 		}
 		p := pair{key: key.inner, msg: string(msgs[i])}
@@ -180,7 +188,7 @@ func PublicKeyFromString(s string) (*PublicKey, error) {
 // infinite signature.
 func (pub *PublicKey) verify(msg, dst []byte, sign crypto.AggregateSignature) bool {
 	xBls, ok := sign.(*Signature)
-	if !ok || pub.point.IsInfinity() {
+	if !ok || xBls == nil || pub == nil || pub.point.IsInfinity() {
 		return false
 	}
 
@@ -264,5 +272,17 @@ func (pub *PublicKey) Verify(msg []byte, sign crypto.AggregateSignature) bool {
 // made by ProvePossession. A validator's key has to pass this before it is
 // aggregated with anyone else's.
 func (pub *PublicKey) VerifyPossession(proof crypto.AggregateSignature) bool {
-	return pub.verify(pub.inner[:], dstPop, proof)
+	return pub != nil && pub.verify(pub.inner[:], dstPop, proof)
+}
+
+// WithProofOfPossession returns a copy eligible for aggregation after checking
+// the proof against this exact key. Deserialized keys must pass this step at
+// registration and rotation. Neither the receiver nor other copies change.
+func (pub *PublicKey) WithProofOfPossession(proof crypto.AggregateSignature) (*PublicKey, error) {
+	if !pub.VerifyPossession(proof) {
+		return nil, fmt.Errorf("crypto/bls12381: invalid proof of possession")
+	}
+	verified := *pub
+	verified.possessionKnown = true
+	return &verified, nil
 }

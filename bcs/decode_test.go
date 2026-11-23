@@ -576,3 +576,40 @@ func TestDecoderRefusesTheSameShapesTheEncoderDoes(t *testing.T) {
 		})
 	}
 }
+
+func TestFrameLimits(t *testing.T) {
+	data := make([]byte, maxFrameSize+1)
+	var got uint8 = 37
+	if err := Decode(bytes.NewReader(data), &got); err == nil {
+		t.Fatal("oversized reader accepted")
+	}
+	if err := DecodeFromBytes(data, &got); err == nil {
+		t.Fatal("oversized bytes accepted")
+	}
+	if got != 37 {
+		t.Fatal("rejected frame mutated the destination")
+	}
+
+	// Exercise the streaming boundary without repeatedly reading a full frame.
+	buf := buffer{str: data[:maxFrameSize]}
+	if err := buf.readFrom(strings.NewReader("")); err != nil {
+		t.Fatal(err)
+	}
+	if err := buf.readFrom(strings.NewReader("x")); err == nil {
+		t.Fatal("stream exceeded frame limit")
+	}
+}
+
+func TestClonedFieldsConsumeDecodeBudget(t *testing.T) {
+	for _, dst := range []any{new(string), new([]byte)} {
+		v := reflect.ValueOf(dst).Elem()
+		reader, err := cachedReader(v.Type())
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf := buffer{str: []byte{2, 'a', 'b'}, remaining: 1}
+		if err := reader(&buf, v); err == nil {
+			t.Fatal("cloned field exceeded allocation budget")
+		}
+	}
+}

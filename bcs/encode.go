@@ -30,7 +30,7 @@ var byteType = reflect.TypeOf(byte(0))
 // sees a half-written value that turned out not to encode.
 func Encode(w io.Writer, v any) error {
 	buf := getBuffer()
-	defer bufferPool.Put(buf)
+	defer buf.release()
 	if err := buf.encode(v); err != nil {
 		return err
 	}
@@ -42,7 +42,7 @@ func Encode(w io.Writer, v any) error {
 // built in goes back to the pool and will be written over.
 func EncodeToBytes(v any) ([]byte, error) {
 	buf := getBuffer()
-	defer bufferPool.Put(buf)
+	defer buf.release()
 	if err := buf.encode(v); err != nil {
 		return nil, err
 	}

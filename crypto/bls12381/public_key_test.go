@@ -249,40 +249,50 @@ func TestAggregateVerifyRefusesTheSameSignerTwice(t *testing.T) {
 	}
 }
 
-// TestRogueKeyAttackWorksWithoutProofOfPossession is the reason ProvePossession
-// exists, demonstrated: a published key of (attacker - honest) lets the
-// attacker alone forge an aggregate for both, and only VerifyPossession refuses it.
-func TestRogueKeyAttackWorksWithoutProofOfPossession(t *testing.T) {
-	honest := mustKey(t).Public().(*PublicKey)
-	attacker := mustKey(t)
-
-	var rogueJac, honestJac bls12381.G2Jac
-	_ = rogueJac.FromAffine(&attacker.Public().(*PublicKey).point)
-	_ = honestJac.FromAffine(&honest.point)
-	_ = rogueJac.SubAssign(&honestJac)
-	var rogueAff bls12381.G2Affine
-	_ = rogueAff.FromJacobian(&rogueJac)
-	rogueBytes := rogueAff.Bytes()
-	rogue, err := PublicKeyFromBytes(rogueBytes[:])
-	if err != nil {
-		t.Fatalf("the rogue key did not decode: %v", err)
-	}
-
-	msg := []byte("a message the honest signer never saw")
-	sum, err := AggregatePublicKey([]*PublicKey{honest, rogue})
+func TestAggregationRequiresRegisteredKeys(t *testing.T) {
+	sk := mustKey(t)
+	local := sk.Public().(*PublicKey)
+	raw, err := PublicKeyFromBytes(local.Bytes())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sum.Verify(msg, mustSign(t, attacker, msg)) {
-		t.Fatal("the forgery did not verify; this test no longer demonstrates anything")
-	}
-
-	proof, err := attacker.ProvePossession()
+	proof, err := sk.ProvePossession()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rogue.VerifyPossession(proof) {
-		t.Error("a proof of possession verified for the rogue key")
+	approved, err := raw.WithProofOfPossession(proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong, err := mustKey(t).ProvePossession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.WithProofOfPossession(wrong); err == nil {
+		t.Fatal("accepted another key's proof")
+	}
+	msg := []byte("vote")
+	sig := mustSign(t, sk, msg)
+	if _, err := AggregatePublicKey([]*PublicKey{raw}); err == nil {
+		t.Fatal("accepted unregistered key")
+	}
+	if AggregateVerify([]*PublicKey{raw}, [][]byte{msg}, sig) {
+		t.Fatal("verified unregistered key")
+	}
+	if !AggregateVerify([]*PublicKey{approved}, [][]byte{msg}, sig) {
+		t.Fatal("rejected registered key")
+	}
+	if _, err := AggregatePublicKey([]*PublicKey{local, approved}); err == nil {
+		t.Fatal("counted duplicate key")
+	}
+}
+
+func TestNilVerification(t *testing.T) {
+	pub := mustKey(t).Public().(*PublicKey)
+	var sig *Signature
+	var absent *PublicKey
+	if pub.Verify(nil, sig) || absent.Verify(nil, sig) || absent.VerifyPossession(sig) {
+		t.Fatal("verified absent input")
 	}
 }
 
